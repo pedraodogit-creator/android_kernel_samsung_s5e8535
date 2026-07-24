@@ -1,0 +1,44 @@
+name: Build Kernel for A14 5G (Exynos 1330)
+
+on:
+  workflow_dispatch:  # Permite iniciar manualmente
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y git build-essential libelf-dev flex bison openssl libssl-dev
+          sudo apt install -y gcc-aarch64-linux-gnu clang lld
+
+      - name: Configure kernel (a14x_defconfig + Halium)
+        run: |
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- a14x_defconfig
+          echo -e "\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ASHMEM=y\nCONFIG_ION=y\nCONFIG_ANDROID_BINDER_DEVICES=\"binder,hwbinder,vndbinder\"" >> .config
+
+      - name: Build kernel (using all cores)
+        run: |
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang LD=ld.lld KCFLAGS="-Wno-error"
+
+      - name: Upload kernel Image as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image
+          path: arch/arm64/boot/Image
+
+      - name: Generate halium-boot.img
+        run: |
+          wget https://github.com/Halium/ramdisk/releases/download/v9/ramdisk.img
+          git clone https://github.com/osm0sis/mkbootimg
+          ./mkbootimg/mkbootimg --kernel arch/arm64/boot/Image --ramdisk ramdisk.img -o halium-boot.img
+
+      - name: Upload halium-boot.img as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: halium-boot
+          path: halium-boot.img
