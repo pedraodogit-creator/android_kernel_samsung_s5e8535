@@ -15,17 +15,10 @@ jobs:
       contents: read
 
     steps:
-      # ===== 1. REMOVER CONFLITOS =====
-      - name: Purge conflicting packages
-        run: |
-          sudo apt update
-          sudo apt purge -y gcc-multilib g++-multilib || true
-          sudo apt autoremove -y
-          sudo apt --fix-broken install -y
-
-      # ===== 2. INSTALAR DEPENDÊNCIAS (SEM gcc-aarch64) =====
+      # Instala dependências básicas (sem compiladores ARM)
       - name: Install build dependencies
         run: |
+          sudo apt update
           sudo apt install -y \
             bc bison build-essential ccache curl device-tree-compiler \
             flex git gnupg gperf libxml2-utils \
@@ -33,7 +26,7 @@ jobs:
             libc6-dev-i386 libssl-dev \
             python3 python3-pip
 
-      # ===== 3. BAIXAR CLANG (já tem as ferramentas ARM) =====
+      # Baixa Clang e LLVM tools
       - name: Setup Clang
         run: |
           mkdir -p $GITHUB_WORKSPACE/toolchain
@@ -42,7 +35,7 @@ jobs:
           tar -xf clang.tar.gz
           echo "$GITHUB_WORKSPACE/toolchain/bin" >> $GITHUB_PATH
 
-      # ===== 4. CLONAR KERNEL =====
+      # Clona o kernel
       - name: Clone kernel source
         run: |
           git clone --depth 1 -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel
@@ -51,9 +44,8 @@ jobs:
             echo "❌ Defconfig não encontrado!"
             exit 1
           fi
-          echo "✅ Código clonado."
 
-      # ===== 5. ATIVAR DRIVERS ETHERNET =====
+      # Ativa drivers Ethernet
       - name: Enable Ethernet drivers
         run: |
           cd kernel
@@ -72,14 +64,12 @@ jobs:
             sed -i "/^# ${KEY} is not set/d" $DEFCONFIG
             echo "$DRV" >> $DEFCONFIG
           done
-          echo "✅ Drivers Ethernet ativados."
 
-      # ===== 6. COMPILAR KERNEL =====
+      # Compila usando apenas Clang e LLVM
       - name: Build kernel
         run: |
           cd kernel
           export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
           export CC=clang
           export LD=ld.lld
           export AR=llvm-ar
@@ -87,7 +77,12 @@ jobs:
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
+          # CROSS_COMPILE não é necessário, mas pode ser definido para compatibilidade
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          # Força o Clang a usar a target correta
+          export CLANG_TRIPLE=aarch64-linux-gnu-
 
+          # Se houver script de build, use-o
           if [ -f "build.sh" ]; then
             chmod +x build.sh
             ./build.sh
@@ -96,6 +91,7 @@ jobs:
             make -j$(nproc --all)
           fi
 
+          # Localiza a imagem
           IMG=""
           for path in "arch/arm64/boot/Image" "arch/arm64/boot/Image.gz-dtb" "out/arch/arm64/boot/Image" "out/arch/arm64/boot/Image.gz-dtb"; do
             if [ -f "$path" ]; then
@@ -108,21 +104,15 @@ jobs:
             exit 1
           fi
           echo "IMAGE_PATH=$IMG" >> $GITHUB_ENV
-          echo "✅ Kernel compilado: $IMG"
 
-      # ===== 7. COLETAR MÓDULOS =====
+      # Coleta módulos (opcional)
       - name: Collect modules
         run: |
           cd kernel
           mkdir -p modules
           find . -name "*.ko" -exec cp {} modules/ \;
-          if [ "$(ls -A modules 2>/dev/null)" ]; then
-            echo "✅ Módulos encontrados."
-          else
-            echo "⚠️ Nenhum módulo .ko."
-          fi
 
-      # ===== 8. EMPACOTAR COM AnyKernel3 =====
+      # Empacota com AnyKernel3
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 AnyKernel3
@@ -133,9 +123,8 @@ jobs:
           echo "Bandido_Ethernet_$(date +%Y%m%d_%H%M)" > AnyKernel3/version
           cd AnyKernel3
           zip -r9 ../Bandido_Kernel_Ethernet.zip * -x .git README.md
-          echo "✅ ZIP criado."
 
-      # ===== 9. UPLOAD =====
+      # Upload
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
