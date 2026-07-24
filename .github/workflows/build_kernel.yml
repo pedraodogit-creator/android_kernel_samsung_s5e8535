@@ -67,13 +67,14 @@ jobs:
             echo "EMPTY RAMDISK (will not boot)" > ramdisk.img
           fi
 
-      - name: Build mkbootimg tool from source
+      - name: Build mkbootimg tool from source (with -Werror removed)
         run: |
           git clone https://github.com/osm0sis/mkbootimg
           cd mkbootimg
+          # Remove -Werror from Makefile to avoid compilation errors
+          sed -i 's/-Werror//g' Makefile
           make
           cd ..
-          # Verifica se o binário foi gerado
           if [ -f mkbootimg/mkbootimg ]; then
             echo "✅ mkbootimg compiled successfully"
           else
