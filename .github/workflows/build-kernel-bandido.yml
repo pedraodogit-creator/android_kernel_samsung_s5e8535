@@ -15,7 +15,6 @@ jobs:
       contents: read
 
     steps:
-      # Instala dependências básicas (sem compiladores ARM)
       - name: Install build dependencies
         run: |
           sudo apt update
@@ -23,19 +22,19 @@ jobs:
             bc bison build-essential ccache curl device-tree-compiler \
             flex git gnupg gperf libxml2-utils \
             lzop pngcrush schedtool squashfs-tools xsltproc zip zlib1g-dev \
-            libc6-dev-i386 libssl-dev \
-            python3 python3-pip
+            libc6-dev-i386 libssl-dev python3 python3-pip \
+            libelf-dev cpio binutils-aarch64-linux-gnu
 
-      # Baixa Clang e LLVM tools
       - name: Setup Clang
         run: |
           mkdir -p $GITHUB_WORKSPACE/toolchain
           cd $GITHUB_WORKSPACE/toolchain
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz -O clang.tar.gz
           tar -xf clang.tar.gz
+          # Garante que o Clang tenha permissão de execução
+          chmod -R +x bin/
           echo "$GITHUB_WORKSPACE/toolchain/bin" >> $GITHUB_PATH
 
-      # Clona o kernel
       - name: Clone kernel source
         run: |
           git clone --depth 1 -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel
@@ -45,19 +44,22 @@ jobs:
             exit 1
           fi
 
-      # Ativa drivers Ethernet
       - name: Enable Ethernet drivers
         run: |
           cd kernel
           DEFCONFIG="arch/arm64/configs/${DEVICE_CODENAME}_defconfig"
+          
           DRIVERS=(
+            "CONFIG_USB_NET_DRIVERS=y"
             "CONFIG_USB_NET_CDCETHER=y"
             "CONFIG_USB_NET_CDC_NCM=y"
-            "CONFIG_USB_NET_AX88179=y"
+            "CONFIG_USB_NET_AX88179_178A=y"
             "CONFIG_USB_RTL8152=y"
             "CONFIG_USB_NET_RNDIS_HOST=y"
             "CONFIG_USB_USBNET=y"
           )
+          
+          # Injeta os drivers limpos no defconfig
           for DRV in "${DRIVERS[@]}"; do
             KEY=$(echo $DRV | cut -d'=' -f1)
             sed -i "/^${KEY}=/d" $DEFCONFIG
@@ -65,66 +67,62 @@ jobs:
             echo "$DRV" >> $DEFCONFIG
           done
 
-      # Compila usando apenas Clang e LLVM
       - name: Build kernel
         run: |
           cd kernel
+          
+          # Exportando flags LLVM globais
           export ARCH=arm64
-          export CC=clang
-          export LD=ld.lld
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
-          # CROSS_COMPILE não é necessário, mas pode ser definido para compatibilidade
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          # Força o Clang a usar a target correta
-          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export SUBARCH=arm64
+          export PATH="$GITHUB_WORKSPACE/toolchain/bin:$PATH"
+          
+          # Argumentos do Make para garantir o uso estrito do LLVM/Clang
+          MAKE_ARGS="O=out ARCH=arm64 \
+            CC=clang \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
 
-          # Se houver script de build, use-o
-          if [ -f "build.sh" ]; then
-            chmod +x build.sh
-            ./build.sh
-          else
-            make ${DEVICE_CODENAME}_defconfig
-            make -j$(nproc --all)
-          fi
-
-          # Localiza a imagem
-          IMG=""
-          for path in "arch/arm64/boot/Image" "arch/arm64/boot/Image.gz-dtb" "out/arch/arm64/boot/Image" "out/arch/arm64/boot/Image.gz-dtb"; do
-            if [ -f "$path" ]; then
-              IMG="$path"
-              break
-            fi
-          done
+          # Prepara o .config
+          make $MAKE_ARGS ${DEVICE_CODENAME}_defconfig
+          
+          # Compila o kernel ignorando o build.sh do repositório (evita hardcodes que quebram o CI)
+          make -j$(nproc --all) $MAKE_ARGS
+          
+          # Busca a imagem compilada
+          IMG=$(find out/arch/arm64/boot -name "Image*" -type f | head -n 1)
+          
           if [ -z "$IMG" ]; then
             echo "❌ Nenhuma imagem gerada!"
             exit 1
           fi
+          
           echo "IMAGE_PATH=$IMG" >> $GITHUB_ENV
+          echo "✅ Imagem encontrada em: $IMG"
 
-      # Coleta módulos (opcional)
       - name: Collect modules
         run: |
           cd kernel
           mkdir -p modules
-          find . -name "*.ko" -exec cp {} modules/ \;
+          find out/ -name "*.ko" -exec cp {} modules/ \;
 
-      # Empacota com AnyKernel3
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          # Ajuste no AnyKernel3 para Samsung (se necessário pelo AnyKernel do dev, caso não seja padrão)
           cp kernel/$IMAGE_PATH AnyKernel3/Image
+          
           if [ -d "kernel/modules" ] && [ "$(ls -A kernel/modules)" ]; then
-            cp -r kernel/modules/* AnyKernel3/modules/ 2>/dev/null || true
+            mkdir -p AnyKernel3/modules/vendor/lib/modules
+            cp -r kernel/modules/* AnyKernel3/modules/vendor/lib/modules/ 2>/dev/null || true
           fi
+          
           echo "Bandido_Ethernet_$(date +%Y%m%d_%H%M)" > AnyKernel3/version
           cd AnyKernel3
           zip -r9 ../Bandido_Kernel_Ethernet.zip * -x .git README.md
 
-      # Upload
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
