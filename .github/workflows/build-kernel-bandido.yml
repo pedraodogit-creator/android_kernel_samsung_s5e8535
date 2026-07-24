@@ -1,14 +1,12 @@
 name: Build Kernel Bandido (Snapdragon) with Ethernet
 
 on:
-  workflow_dispatch:  # Executa manualmente pelo botão "Run workflow"
+  workflow_dispatch:
 
 env:
-  # ===== DADOS DO KERNEL BANDIDO PARA S20 FE SNAPDRAGON =====
   KERNEL_REPO: "https://github.com/bemerguy/bandido-sm8250.git"
   KERNEL_BRANCH: "bandido"
   DEVICE_CODENAME: "r8q"
-  # ===========================================================
 
 jobs:
   build:
@@ -17,19 +15,27 @@ jobs:
       contents: read
 
     steps:
-      # 1. Instala TODAS as dependências (ambiente limpo)
-      - name: Install build dependencies
+      # ===== 1. REMOVER PACOTES CONFLITANTES =====
+      - name: Remove conflicting packages
         run: |
           sudo apt update
+          sudo apt remove -y gcc-multilib g++-multilib 2>/dev/null || true
+          sudo apt autoremove -y
+          sudo apt --fix-broken install -y
+
+      # ===== 2. INSTALAR DEPENDÊNCIAS (sem multilib) =====
+      - name: Install build dependencies
+        run: |
           sudo apt install -y \
             bc bison build-essential ccache curl device-tree-compiler \
-            flex g++-multilib gcc-multilib git gnupg gperf libxml2-utils \
+            flex git gnupg gperf libxml2-utils \
             lzop pngcrush schedtool squashfs-tools xsltproc zip zlib1g-dev \
-            libc6-dev-i386 gcc-aarch64-linux-gnu libssl-dev \
-            python3 python3-pip
+            libc6-dev-i386 libssl-dev \
+            python3 python3-pip \
+            gcc-aarch64-linux-gnu
 
-      # 2. Baixa o compilador Clang (da Google)
-      - name: Setup Clang toolchain
+      # ===== 3. CLANG TOOLCHAIN =====
+      - name: Setup Clang
         run: |
           mkdir -p $GITHUB_WORKSPACE/toolchain
           cd $GITHUB_WORKSPACE/toolchain
@@ -37,25 +43,22 @@ jobs:
           tar -xf clang.tar.gz
           echo "$GITHUB_WORKSPACE/toolchain/bin" >> $GITHUB_PATH
 
-      # 3. Clona o código-fonte do kernel Bandido
+      # ===== 4. CLONAR KERNEL =====
       - name: Clone kernel source
         run: |
           git clone --depth 1 -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel
           cd kernel
-          # Verifica se o defconfig existe
           if [ ! -f "arch/arm64/configs/${DEVICE_CODENAME}_defconfig" ]; then
-            echo "❌ Defconfig não encontrado! Verifique o DEVICE_CODENAME."
+            echo "❌ Defconfig não encontrado!"
             exit 1
           fi
-          echo "✅ Código-fonte clonado com sucesso."
+          echo "✅ Código clonado."
 
-      # 4. Ativa os drivers USB-Ethernet (CORREÇÃO PRINCIPAL)
+      # ===== 5. ATIVAR DRIVERS ETHERNET =====
       - name: Enable Ethernet drivers
         run: |
           cd kernel
           DEFCONFIG="arch/arm64/configs/${DEVICE_CODENAME}_defconfig"
-          
-          # Lista de drivers a serem ativados (embutidos = y)
           DRIVERS=(
             "CONFIG_USB_NET_CDCETHER=y"
             "CONFIG_USB_NET_CDC_NCM=y"
@@ -64,18 +67,15 @@ jobs:
             "CONFIG_USB_NET_RNDIS_HOST=y"
             "CONFIG_USB_USBNET=y"
           )
-          
           for DRV in "${DRIVERS[@]}"; do
             KEY=$(echo $DRV | cut -d'=' -f1)
-            # Remove linhas antigas (evita duplicatas)
             sed -i "/^${KEY}=/d" $DEFCONFIG
             sed -i "/^# ${KEY} is not set/d" $DEFCONFIG
-            # Adiciona a nova configuração
             echo "$DRV" >> $DEFCONFIG
           done
-          echo "✅ Drivers Ethernet ativados no defconfig."
+          echo "✅ Drivers Ethernet ativados."
 
-      # 5. Compila o kernel
+      # ===== 6. COMPILAR KERNEL =====
       - name: Build kernel
         run: |
           cd kernel
@@ -88,8 +88,7 @@ jobs:
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
-          
-          # Se existir script de build próprio, usa ele
+
           if [ -f "build.sh" ]; then
             chmod +x build.sh
             ./build.sh
@@ -97,8 +96,7 @@ jobs:
             make ${DEVICE_CODENAME}_defconfig
             make -j$(nproc --all)
           fi
-          
-          # Localiza a imagem compilada
+
           IMG=""
           for path in "arch/arm64/boot/Image" "arch/arm64/boot/Image.gz-dtb" "out/arch/arm64/boot/Image" "out/arch/arm64/boot/Image.gz-dtb"; do
             if [ -f "$path" ]; then
@@ -106,27 +104,26 @@ jobs:
               break
             fi
           done
-          
           if [ -z "$IMG" ]; then
-            echo "❌ Nenhuma imagem do kernel foi gerada!"
+            echo "❌ Nenhuma imagem gerada!"
             exit 1
           fi
           echo "IMAGE_PATH=$IMG" >> $GITHUB_ENV
-          echo "✅ Kernel compilado com sucesso: $IMG"
+          echo "✅ Kernel compilado: $IMG"
 
-      # 6. Coleta módulos .ko (se existirem)
-      - name: Collect kernel modules
+      # ===== 7. COLETAR MÓDULOS =====
+      - name: Collect modules
         run: |
           cd kernel
           mkdir -p modules
           find . -name "*.ko" -exec cp {} modules/ \;
           if [ "$(ls -A modules 2>/dev/null)" ]; then
-            echo "✅ Módulos encontrados: $(ls modules | wc -l)"
+            echo "✅ Módulos encontrados."
           else
-            echo "⚠️ Nenhum módulo .ko encontrado (normal para kernels embutidos)."
+            echo "⚠️ Nenhum módulo .ko."
           fi
 
-      # 7. Prepara o pacote AnyKernel3 para TWRP
+      # ===== 8. EMPACOTAR COM AnyKernel3 =====
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 AnyKernel3
@@ -137,9 +134,9 @@ jobs:
           echo "Bandido_Ethernet_$(date +%Y%m%d_%H%M)" > AnyKernel3/version
           cd AnyKernel3
           zip -r9 ../Bandido_Kernel_Ethernet.zip * -x .git README.md
-          echo "✅ Pacote ZIP criado."
+          echo "✅ ZIP criado."
 
-      # 8. Faz o upload do arquivo gerado
+      # ===== 9. UPLOAD =====
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
