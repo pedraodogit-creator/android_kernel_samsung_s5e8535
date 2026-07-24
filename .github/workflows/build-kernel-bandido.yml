@@ -15,24 +15,28 @@ jobs:
       contents: read
 
     steps:
-      # ===== 1. REMOVER PACOTES CONFLITANTES =====
-      - name: Remove conflicting packages
+      # ===== 1. REMOVER CONFLITOS ANTES DE TUDO =====
+      - name: Fix broken packages and remove conflicts
         run: |
           sudo apt update
+          # Remove pacotes conflitantes (se existirem)
+          sudo dpkg --remove --force-remove-reinstreq gcc-multilib g++-multilib 2>/dev/null || true
           sudo apt remove -y gcc-multilib g++-multilib 2>/dev/null || true
           sudo apt autoremove -y
           sudo apt --fix-broken install -y
 
-      # ===== 2. INSTALAR DEPENDÊNCIAS (sem multilib) =====
+      # ===== 2. INSTALAR DEPENDÊNCIAS (SEM MUITILIB) =====
       - name: Install build dependencies
         run: |
+          # Instala tudo que precisa, exceto gcc-multilib
           sudo apt install -y \
             bc bison build-essential ccache curl device-tree-compiler \
             flex git gnupg gperf libxml2-utils \
             lzop pngcrush schedtool squashfs-tools xsltproc zip zlib1g-dev \
             libc6-dev-i386 libssl-dev \
-            python3 python3-pip \
-            gcc-aarch64-linux-gnu
+            python3 python3-pip
+          # Agora instala o GCC para ARM (sem conflito, pois o multilib foi removido)
+          sudo apt install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
       # ===== 3. CLANG TOOLCHAIN =====
       - name: Setup Clang
