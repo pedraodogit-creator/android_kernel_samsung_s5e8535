@@ -20,6 +20,8 @@ jobs:
         run: |
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- a14x_defconfig
           echo -e "\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ASHMEM=y\nCONFIG_ION=y\nCONFIG_ANDROID_BINDER_DEVICES=\"binder,hwbinder,vndbinder\"" >> .config
+          # Desabilita a geração de BTF (evita erro do pahole)
+          scripts/config --disable CONFIG_DEBUG_INFO_BTF
 
       - name: Build kernel (using all cores)
         run: |
