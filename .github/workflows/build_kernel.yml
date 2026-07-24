@@ -45,39 +45,49 @@ jobs:
           name: kernel-image
           path: arch/arm64/boot/Image
 
-      - name: Try to download Halium ramdisk (multiple sources)
+      - name: Download Halium ramdisk (multiple sources)
         id: ramdisk
         run: |
-          # Tenta baixar de várias fontes até conseguir
           sources=(
             "https://raw.githubusercontent.com/Halium/ramdisk/v9/ramdisk.img"
             "https://gitlab.com/halium/ramdisk/-/raw/v9/ramdisk.img?inline=false"
-            "https://dl.google.com/android/repository/ramdisk.img"  # Fallback AOSP
+            "https://dl.google.com/android/repository/ramdisk.img"
           )
           for url in "${sources[@]}"; do
-            echo "Tentando baixar de: $url"
+            echo "Trying to download from: $url"
             if wget --timeout=10 --tries=3 "$url" -O ramdisk.img; then
-              echo "✅ Ramdisk baixado com sucesso de: $url"
+              echo "✅ Ramdisk downloaded from: $url"
               echo "ramdisk_ok=true" >> $GITHUB_OUTPUT
               break
             fi
           done
           if [ ! -f ramdisk.img ]; then
-            echo "⚠️ Nenhum ramdisk foi baixado. Criando um ramdisk vazio para teste."
+            echo "⚠️ No ramdisk could be downloaded. Creating an empty one (boot.img will be non-functional)."
             echo "ramdisk_ok=false" >> $GITHUB_OUTPUT
-            # Cria um ramdisk vazio (não funcional, mas permite gerar o boot.img)
-            echo "EMPTY RAMDISK" > ramdisk.img
+            echo "EMPTY RAMDISK (will not boot)" > ramdisk.img
+          fi
+
+      - name: Build mkbootimg tool from source
+        run: |
+          git clone https://github.com/osm0sis/mkbootimg
+          cd mkbootimg
+          make
+          cd ..
+          # Verifica se o binário foi gerado
+          if [ -f mkbootimg/mkbootimg ]; then
+            echo "✅ mkbootimg compiled successfully"
+          else
+            echo "❌ Failed to compile mkbootimg"
+            exit 1
           fi
 
       - name: Generate halium-boot.img
         run: |
-          git clone https://github.com/osm0sis/mkbootimg
-          chmod +x mkbootimg/mkbootimg
           if [ -f arch/arm64/boot/Image ]; then
             ./mkbootimg/mkbootimg --kernel arch/arm64/boot/Image --ramdisk ramdisk.img -o halium-boot.img
-            echo "✅ halium-boot.img gerado com sucesso!"
+            echo "✅ halium-boot.img generated successfully!"
           else
-            echo "❌ Kernel Image não encontrado. Não foi possível gerar o boot.img."
+            echo "❌ Kernel Image not found. Cannot generate boot.img."
             exit 1
           fi
 
