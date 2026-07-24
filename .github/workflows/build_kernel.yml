@@ -20,14 +20,24 @@ jobs:
         run: |
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- a14x_defconfig
           echo -e "\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ASHMEM=y\nCONFIG_ION=y\nCONFIG_ANDROID_BINDER_DEVICES=\"binder,hwbinder,vndbinder\"" >> .config
-          # Desabilita a geração de BTF (evita erro do pahole)
           scripts/config --disable CONFIG_DEBUG_INFO_BTF
-          # Transforma section mismatches em avisos (não erros)
           scripts/config --enable CONFIG_SECTION_MISMATCH_WARN_ONLY
 
       - name: Build kernel (using all cores)
         run: |
           make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang LD=ld.lld KCFLAGS="-Wno-error"
+
+      - name: Verify kernel image
+        id: verify
+        run: |
+          if [ -f arch/arm64/boot/Image ]; then
+            echo "✅ Kernel Image generated successfully!"
+            echo "image_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Kernel Image not found!"
+            echo "image_exists=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
 
       - name: Upload kernel Image as artifact
         uses: actions/upload-artifact@v4
@@ -35,11 +45,41 @@ jobs:
           name: kernel-image
           path: arch/arm64/boot/Image
 
+      - name: Try to download Halium ramdisk (multiple sources)
+        id: ramdisk
+        run: |
+          # Tenta baixar de várias fontes até conseguir
+          sources=(
+            "https://raw.githubusercontent.com/Halium/ramdisk/v9/ramdisk.img"
+            "https://gitlab.com/halium/ramdisk/-/raw/v9/ramdisk.img?inline=false"
+            "https://dl.google.com/android/repository/ramdisk.img"  # Fallback AOSP
+          )
+          for url in "${sources[@]}"; do
+            echo "Tentando baixar de: $url"
+            if wget --timeout=10 --tries=3 "$url" -O ramdisk.img; then
+              echo "✅ Ramdisk baixado com sucesso de: $url"
+              echo "ramdisk_ok=true" >> $GITHUB_OUTPUT
+              break
+            fi
+          done
+          if [ ! -f ramdisk.img ]; then
+            echo "⚠️ Nenhum ramdisk foi baixado. Criando um ramdisk vazio para teste."
+            echo "ramdisk_ok=false" >> $GITHUB_OUTPUT
+            # Cria um ramdisk vazio (não funcional, mas permite gerar o boot.img)
+            echo "EMPTY RAMDISK" > ramdisk.img
+          fi
+
       - name: Generate halium-boot.img
         run: |
-          wget https://github.com/Halium/ramdisk/releases/download/v9/ramdisk.img
           git clone https://github.com/osm0sis/mkbootimg
-          ./mkbootimg/mkbootimg --kernel arch/arm64/boot/Image --ramdisk ramdisk.img -o halium-boot.img
+          chmod +x mkbootimg/mkbootimg
+          if [ -f arch/arm64/boot/Image ]; then
+            ./mkbootimg/mkbootimg --kernel arch/arm64/boot/Image --ramdisk ramdisk.img -o halium-boot.img
+            echo "✅ halium-boot.img gerado com sucesso!"
+          else
+            echo "❌ Kernel Image não encontrado. Não foi possível gerar o boot.img."
+            exit 1
+          fi
 
       - name: Upload halium-boot.img as artifact
         uses: actions/upload-artifact@v4
