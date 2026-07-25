@@ -15,11 +15,20 @@ jobs:
           sudo apt update
           sudo apt install -y git build-essential libelf-dev flex bison openssl libssl-dev \
             gcc-aarch64-linux-gnu clang lld python3 python3-pip wget unzip
-          # instalar mkbootimg e gki via pip no --user para não usar sudo pip
-          python3 -m pip install --upgrade pip
-          python3 -m pip install --user mkbootimg gki || true
-          # garantir ~/.local/bin no PATH do restante do workflow
-          echo "PATH=$HOME/.local/bin:$PATH" >> $GITHUB_ENV
+          
+          # Install mkbootimg from Halium's AOSP repository
+          git clone --depth 1 https://github.com/Halium/mkbootimg.git /tmp/mkbootimg
+          if [ -f /tmp/mkbootimg/mkbootimg ]; then
+            sudo cp /tmp/mkbootimg/mkbootimg /usr/local/bin/mkbootimg
+            sudo chmod +x /usr/local/bin/mkbootimg
+            echo "✅ mkbootimg installed to /usr/local/bin"
+          else
+            echo "❌ Failed to install mkbootimg"
+            exit 1
+          fi
+          
+          # Verify installation
+          mkbootimg --help >/dev/null 2>&1 && echo "✅ mkbootimg is functional" || exit 1
 
       - name: Configure kernel (a14x_defconfig + Halium)
         run: |
@@ -75,39 +84,6 @@ jobs:
             echo "ramdisk_ok=false" >> $GITHUB_OUTPUT
             echo "EMPTY RAMDISK (will not boot)" > ramdisk.img
           fi
-
-      - name: Ensure mkbootimg is usable (install/check once)
-        run: |
-          # show PATH and which mkbootimg resolves to
-          echo "PATH=$PATH"
-          echo "which mkbootimg: $(command -v mkbootimg || echo 'not found')"
-
-          # If mkbootimg exists and works, keep it. Otherwise try to install usable mkbootimg.
-          if command -v mkbootimg >/dev/null 2>&1 && mkbootimg --help >/dev/null 2>&1 ; then
-            echo "mkbootimg funcional: $(command -v mkbootimg)"
-          else
-            echo "Tentando instalar mkbootimg funcional via pip (~/.local/bin)..."
-            python3 -m pip install --upgrade pip
-            python3 -m pip install --user mkbootimg gki || true
-            export PATH="$HOME/.local/bin:$PATH"
-            echo "PATH atualizado temporariamente: $PATH"
-
-            # se ainda assim não existir ou não estiver funcional, instalar fallback do Halium/AOSP
-            if ! command -v mkbootimg >/dev/null 2>&1 || ! mkbootimg --help >/dev/null 2>&1 ; then
-              echo "Tentando fallback: instalar mkbootimg do repositório Halium/AOSP..."
-              git clone --depth 1 https://github.com/Halium/mkbootimg.git /tmp/mkbootimg || true
-              if [ -f /tmp/mkbootimg/mkbootimg ]; then
-                sudo cp /tmp/mkbootimg/mkbootimg /usr/local/bin/mkbootimg
-                sudo chmod +x /usr/local/bin/mkbootimg
-                echo "Fallback: /usr/local/bin/mkbootimg instalado."
-              else
-                echo "Falha no fallback: não encontrou script mkbootimg direto no repo Halium."
-              fi
-            fi
-          fi
-
-          echo "Final check: which mkbootimg -> $(command -v mkbootimg || echo 'nenhum')"
-          mkbootimg --help 2>&1 | sed -n '1,120p' || true
 
       - name: Generate halium-boot.img (AOSP mkbootimg)
         run: |
