@@ -61,7 +61,7 @@ jobs:
           echo "📥 Clonando kernel (branch: ${{ env.KERNEL_BRANCH }})..."
           git clone --depth 1 -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel
           cd kernel
-          DEFCONFIG="arch/arm64/configs/${DEVICE_CODENAME}_defconfig"
+          DEFCONFIG="arch/arm64/configs/${{ env.DEVICE_CODENAME }}_defconfig"
           if [ ! -f "$DEFCONFIG" ]; then
             echo "❌ Defconfig não encontrado em: $DEFCONFIG"
             echo "📂 Conteúdo de arch/arm64/configs/:"
@@ -77,7 +77,7 @@ jobs:
         run: |
           set -e
           cd kernel
-          DEFCONFIG="arch/arm64/configs/${DEVICE_CODENAME}_defconfig"
+          DEFCONFIG="arch/arm64/configs/${{ env.DEVICE_CODENAME }}_defconfig"
           
           # Backup do original
           cp "$DEFCONFIG" "$DEFCONFIG.bak"
@@ -121,7 +121,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
 
           echo "⚙️ Gerando .config..."
-          make $MAKE_ARGS ${DEVICE_CODENAME}_defconfig
+          make $MAKE_ARGS ${{ env.DEVICE_CODENAME }}_defconfig
           
           # 🔥 NOVIDADE: Resolve todas as opções pendentes automaticamente
           echo "🔄 Resolvendo opções de configuração pendentes (make olddefconfig)..."
@@ -140,7 +140,7 @@ jobs:
           fi
           
           echo "✅ Imagem encontrada em: $IMG"
-          echo "IMAGE_PATH=$IMG" >> $GITHUB_ENV
+          echo "IMAGE_PATH=${IMG}" >> $GITHUB_ENV
 
       # ============================================================
       # 6. UPLOAD DO KERNEL IMAGE (opcional)
@@ -202,25 +202,31 @@ jobs:
           KERNEL_IMAGE="${{ env.IMAGE_PATH }}"
           cd ..
           
+          if [ -z "$KERNEL_IMAGE" ]; then
+            echo "❌ IMAGE_PATH não foi definida!"
+            exit 1
+          fi
+          
           if [ ! -f "kernel/$KERNEL_IMAGE" ]; then
             echo "❌ Kernel Image não encontrado em: kernel/$KERNEL_IMAGE"
             exit 1
           fi
           
           # Encontrar DTB
-          DTB=$(find kernel/out/arch/arm64/boot/dts -name "*.dtb" | grep -E "exynos|s5e|a14" | head -1)
+          DTB=$(find kernel/out/arch/arm64/boot/dts -name "*.dtb" 2>/dev/null | grep -E "exynos|s5e|a14" | head -1)
           
-          CMD="./mkbootimg/mkbootimg --kernel kernel/$KERNEL_IMAGE --ramdisk ramdisk.img --output halium-boot.img"
+          # Construir comando de forma segura
+          MKBOOTIMG_CMD="./mkbootimg/mkbootimg --kernel kernel/$KERNEL_IMAGE --ramdisk ramdisk.img --output halium-boot.img"
           
           if [ -n "$DTB" ] && [ -f "$DTB" ]; then
-            CMD="$CMD --dtb $DTB"
+            MKBOOTIMG_CMD="$MKBOOTIMG_CMD --dtb $DTB"
             echo "✅ Incluindo DTB: $DTB"
           else
             echo "⚠️ Nenhuma DTB encontrada. O boot pode não funcionar."
           fi
           
-          echo "📦 Executando: $CMD"
-          eval $CMD
+          echo "📦 Executando: $MKBOOTIMG_CMD"
+          $MKBOOTIMG_CMD
           
           if [ -f halium-boot.img ]; then
             echo "✅ halium-boot.img gerado com sucesso!"
