@@ -3,125 +3,239 @@ name: Build Kernel for A14 5G (Exynos 1330)
 on:
   workflow_dispatch:
 
+env:
+  KERNEL_REPO: "https://github.com/devhunter1/android_kernel_samsung_s5e8535.git"
+  KERNEL_BRANCH: "lineage-23.2"
+  DEVICE_CODENAME: "a14x"
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
+      # ============================================================
+      # 1. INSTALAÇÃO DE DEPENDÊNCIAS
+      # ============================================================
+      - name: Install build dependencies
         run: |
+          set -e
           sudo apt update
-          sudo apt install -y git build-essential libelf-dev flex bison openssl libssl-dev \
-            gcc-aarch64-linux-gnu clang lld python3 python3-pip wget unzip
+          sudo apt install --no-install-recommends -y \
+            bc bison build-essential ccache curl device-tree-compiler \
+            flex git gnupg gperf libxml2-utils \
+            lzop pngcrush schedtool squashfs-tools xsltproc zip zlib1g-dev \
+            libssl-dev python3 python3-pip libelf-dev cpio
+
+      # ============================================================
+      # 2. SETUP DO CLANG (via Google)
+      # ============================================================
+      - name: Setup Clang
+        run: |
+          set -e
+          mkdir -p ${{ github.workspace }}/toolchain
+          cd ${{ github.workspace }}/toolchain
+          echo "📥 Baixando Clang..."
+          wget -q --show-progress https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz -O clang.tar.gz
+          if [ ! -f clang.tar.gz ]; then
+            echo "❌ Falha no download do Clang!"
+            exit 1
+          fi
+          echo "📦 Extraindo Clang..."
+          tar -xf clang.tar.gz
+          if [ ! -d "bin" ]; then
+            echo "❌ Diretório 'bin' não encontrado após extração!"
+            exit 1
+          fi
+          chmod -R +x bin/
+          echo "${{ github.workspace }}/toolchain/bin" >> $GITHUB_PATH
+          echo "✅ Clang configurado com sucesso!"
+
+      # ============================================================
+      # 3. CLONE DO KERNEL
+      # ============================================================
+      - name: Clone kernel source
+        run: |
+          set -e
+          echo "📥 Clonando kernel (branch: ${{ env.KERNEL_BRANCH }})..."
+          git clone --depth 1 -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel
+          cd kernel
+          DEFCONFIG="arch/arm64/configs/${DEVICE_CODENAME}_defconfig"
+          if [ ! -f "$DEFCONFIG" ]; then
+            echo "❌ Defconfig não encontrado em: $DEFCONFIG"
+            echo "📂 Conteúdo de arch/arm64/configs/:"
+            ls -la arch/arm64/configs/ || true
+            exit 1
+          fi
+          echo "✅ Defconfig encontrado: $DEFCONFIG"
+
+      # ============================================================
+      # 4. CONFIGURAÇÃO DO KERNEL (Halium + Correções + olddefconfig)
+      # ============================================================
+      - name: Configure kernel
+        run: |
+          set -e
+          cd kernel
+          DEFCONFIG="arch/arm64/configs/${DEVICE_CODENAME}_defconfig"
           
-          # Install mkbootimg from Halium's AOSP repository
-          git clone --depth 1 https://github.com/Halium/mkbootimg.git /tmp/mkbootimg
-          if [ -f /tmp/mkbootimg/mkbootimg ]; then
-            sudo cp /tmp/mkbootimg/mkbootimg /usr/local/bin/mkbootimg
-            sudo chmod +x /usr/local/bin/mkbootimg
-            echo "✅ mkbootimg installed to /usr/local/bin"
-          else
-            echo "❌ Failed to install mkbootimg"
+          # Backup do original
+          cp "$DEFCONFIG" "$DEFCONFIG.bak"
+          
+          # Adiciona opções do Halium
+          echo -e "\nCONFIG_ANDROID_BINDER_IPC=y" >> "$DEFCONFIG"
+          echo "CONFIG_ASHMEM=y" >> "$DEFCONFIG"
+          echo "CONFIG_ION=y" >> "$DEFCONFIG"
+          echo 'CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"' >> "$DEFCONFIG"
+          
+          # Desabilita BTF (evita erro do pahole)
+          sed -i 's/CONFIG_DEBUG_INFO_BTF=y/# CONFIG_DEBUG_INFO_BTF is not set/g' "$DEFCONFIG"
+          
+          # Transforma section mismatches em avisos
+          echo "CONFIG_SECTION_MISMATCH_WARN_ONLY=y" >> "$DEFCONFIG"
+          
+          echo "✅ Configuração concluída (backup em $DEFCONFIG.bak)"
+
+      # ============================================================
+      # 5. COMPILAÇÃO DO KERNEL (com olddefconfig para resolver opções)
+      # ============================================================
+      - name: Build kernel
+        run: |
+          set -e
+          cd kernel
+          
+          export PATH="${{ github.workspace }}/toolchain/bin:$PATH"
+          
+          if ! command -v clang &> /dev/null; then
+            echo "❌ Clang não encontrado no PATH!"
+            exit 1
+          fi
+          echo "🔧 Usando Clang: $(clang --version | head -n1)"
+          
+          MAKE_ARGS="O=out ARCH=arm64 \
+            CC=clang \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+
+          echo "⚙️ Gerando .config..."
+          make $MAKE_ARGS ${DEVICE_CODENAME}_defconfig
+          
+          # 🔥 NOVIDADE: Resolve todas as opções pendentes automaticamente
+          echo "🔄 Resolvendo opções de configuração pendentes (make olddefconfig)..."
+          make $MAKE_ARGS olddefconfig
+          
+          echo "🛠️ Compilando kernel (usando todos os núcleos)..."
+          make -j$(nproc) $MAKE_ARGS KCFLAGS="-Wno-error"
+          
+          IMG=$(find out/arch/arm64/boot -name "Image*" -type f | head -n 1)
+          
+          if [ -z "$IMG" ]; then
+            echo "❌ Nenhuma imagem gerada em out/arch/arm64/boot/"
+            echo "📂 Conteúdo de out/arch/arm64/boot/:"
+            ls -la out/arch/arm64/boot/ || true
             exit 1
           fi
           
-          # Verify installation
-          mkbootimg --help >/dev/null 2>&1 && echo "✅ mkbootimg is functional" || exit 1
+          echo "✅ Imagem encontrada em: $IMG"
+          echo "IMAGE_PATH=$IMG" >> $GITHUB_ENV
 
-      - name: Configure kernel (a14x_defconfig + Halium)
-        run: |
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- a14x_defconfig
-          echo -e "\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ASHMEM=y\nCONFIG_ION=y\nCONFIG_ANDROID_BINDER_DEVICES=\"binder,hwbinder,vndbinder\"" >> .config
-          scripts/config --disable CONFIG_DEBUG_INFO_BTF
-          scripts/config --enable CONFIG_SECTION_MISMATCH_WARN_ONLY
-
-      - name: Build kernel (using all cores)
-        run: |
-          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang LD=ld.lld KCFLAGS="-Wno-error"
-
-      - name: Verify kernel image
-        id: verify
-        run: |
-          if [ -f arch/arm64/boot/Image ]; then
-            echo "✅ Kernel Image generated successfully!"
-            echo "image_exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "❌ Kernel Image not found!"
-            echo "image_exists=false" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
+      # ============================================================
+      # 6. UPLOAD DO KERNEL IMAGE (opcional)
+      # ============================================================
       - name: Upload kernel Image as artifact
         uses: actions/upload-artifact@v4
         with:
           name: kernel-image
-          path: arch/arm64/boot/Image
+          path: kernel/${{ env.IMAGE_PATH }}
+          retention-days: 7
 
-      - name: Find DTB file
-        id: dtb
+      # ============================================================
+      # 7. CLONE DO MKTBOOTIMG (com token para evitar pedir credenciais)
+      # ============================================================
+      - name: Clone mkbootimg
         run: |
-          DTB_FILE=$(find arch/arm64/boot/dts -name "*.dtb" | grep -E "exynos|s5e|a14" | head -1 || true)
-          if [ -n "$DTB_FILE" ]; then
-            echo "✅ Found DTB: $DTB_FILE"
-            echo "dtb_path=$DTB_FILE" >> $GITHUB_OUTPUT
+          set -e
+          git config --global credential.helper store
+          echo "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com" > ~/.git-credentials
+          git clone https://github.com/osm0sis/mkbootimg.git
+
+      - name: Build mkbootimg (remove -Werror)
+        run: |
+          set -e
+          cd mkbootimg
+          sed -i 's/-Werror//g' Makefile
+          sed -i 's/-Werror//g' libmincrypt/Makefile || true
+          make
+          cd ..
+          if [ -f mkbootimg/mkbootimg ]; then
+            echo "✅ mkbootimg compilado com sucesso"
           else
-            echo "⚠️ No DTB found. Device may not boot."
-            echo "dtb_path=" >> $GITHUB_OUTPUT
+            echo "❌ Falha ao compilar mkbootimg"
+            exit 1
           fi
 
-      - name: Download Halium ramdisk (from Git)
-        id: ramdisk
+      # ============================================================
+      # 8. BAIXAR RAMDISK DO HALIUM (via Git)
+      # ============================================================
+      - name: Download Halium ramdisk
         run: |
-          git clone --depth 1 https://gitlab.com/halium/ramdisk.git halium-ramdisk || true
+          set -e
+          git clone --depth 1 https://gitlab.com/halium/ramdisk.git halium-ramdisk
           if [ -f halium-ramdisk/ramdisk.img ]; then
             cp halium-ramdisk/ramdisk.img .
-            echo "✅ Ramdisk downloaded successfully!"
-            echo "ramdisk_ok=true" >> $GITHUB_OUTPUT
+            echo "✅ Ramdisk baixado com sucesso"
           else
-            echo "⚠️ Ramdisk not found. Creating empty ramdisk (will not boot)."
-            echo "ramdisk_ok=false" >> $GITHUB_OUTPUT
-            echo "EMPTY RAMDISK (will not boot)" > ramdisk.img
+            echo "⚠️ Ramdisk não encontrado. Criando um vazio (não funcional)."
+            touch ramdisk.img
           fi
 
-      - name: Generate halium-boot.img (AOSP mkbootimg)
+      # ============================================================
+      # 9. GERAR HALIUM-BOOT.IMG (com DTB)
+      # ============================================================
+      - name: Generate halium-boot.img
         run: |
-          set -euo pipefail
-          KERNEL="arch/arm64/boot/Image"
-          RAMDISK="ramdisk.img"
-          DTB="${{ steps.dtb.outputs.dtb_path }}"
-          OUTPUT="halium-boot.img"
-
-          if [ ! -f "$KERNEL" ]; then
-            echo "❌ Kernel Image not found!"
+          set -e
+          cd kernel
+          KERNEL_IMAGE="${{ env.IMAGE_PATH }}"
+          cd ..
+          
+          if [ ! -f "kernel/$KERNEL_IMAGE" ]; then
+            echo "❌ Kernel Image não encontrado em: kernel/$KERNEL_IMAGE"
             exit 1
           fi
-
-          if ! command -v mkbootimg >/dev/null 2>&1 ; then
-            echo "❌ mkbootimg não está disponível no PATH. Verifique etapa de instalação."
-            exit 1
-          fi
-
-          CMD=(mkbootimg --kernel "$KERNEL" --ramdisk "$RAMDISK" --output "$OUTPUT")
+          
+          # Encontrar DTB
+          DTB=$(find kernel/out/arch/arm64/boot/dts -name "*.dtb" | grep -E "exynos|s5e|a14" | head -1)
+          
+          CMD="./mkbootimg/mkbootimg --kernel kernel/$KERNEL_IMAGE --ramdisk ramdisk.img --output halium-boot.img"
+          
           if [ -n "$DTB" ] && [ -f "$DTB" ]; then
-            CMD+=(--dtb "$DTB")
+            CMD="$CMD --dtb $DTB"
             echo "✅ Incluindo DTB: $DTB"
+          else
+            echo "⚠️ Nenhuma DTB encontrada. O boot pode não funcionar."
           fi
-
-          echo "Executando: ${CMD[*]}"
-          "${CMD[@]}"
-
-          if [ -f "$OUTPUT" ]; then
+          
+          echo "📦 Executando: $CMD"
+          eval $CMD
+          
+          if [ -f halium-boot.img ]; then
             echo "✅ halium-boot.img gerado com sucesso!"
-            ls -lh "$OUTPUT"
+            ls -lh halium-boot.img
           else
             echo "❌ Falha ao gerar halium-boot.img"
             exit 1
           fi
 
+      # ============================================================
+      # 10. UPLOAD DO HALIUM-BOOT.IMG
+      # ============================================================
       - name: Upload halium-boot.img as artifact
         uses: actions/upload-artifact@v4
         with:
           name: halium-boot
           path: halium-boot.img
+          retention-days: 7
