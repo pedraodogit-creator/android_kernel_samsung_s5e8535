@@ -99,11 +99,17 @@ jobs:
           # Backup do original
           cp "$DEFCONFIG" "$DEFCONFIG.bak"
 
+          # Remove duplicates if they already exist, then add Halium options
+          grep -v "^CONFIG_ANDROID_BINDER_IPC=" "$DEFCONFIG" > "$DEFCONFIG.tmp" && mv "$DEFCONFIG.tmp" "$DEFCONFIG"
+          grep -v "^CONFIG_ASHMEM=" "$DEFCONFIG" > "$DEFCONFIG.tmp" && mv "$DEFCONFIG.tmp" "$DEFCONFIG"
+          grep -v "^CONFIG_ION=" "$DEFCONFIG" > "$DEFCONFIG.tmp" && mv "$DEFCONFIG.tmp" "$DEFCONFIG"
+          grep -v "^CONFIG_ANDROID_BINDER_DEVICES=" "$DEFCONFIG" > "$DEFCONFIG.tmp" && mv "$DEFCONFIG.tmp" "$DEFCONFIG"
+
           # Adiciona opções do Halium
-          echo -e "\nCONFIG_ANDROID_BINDER_IPC=y" >> "$DEFCONFIG"
-          echo "CONFIG_ASHMEM=y" >> "$DEFCONFIG"
-          echo "CONFIG_ION=y" >> "$DEFCONFIG"
-          echo 'CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"' >> "$DEFCONFIG"
+          printf '\nCONFIG_ANDROID_BINDER_IPC=y\n' >> "$DEFCONFIG"
+          printf 'CONFIG_ASHMEM=y\n' >> "$DEFCONFIG"
+          printf 'CONFIG_ION=y\n' >> "$DEFCONFIG"
+          printf 'CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"\n' >> "$DEFCONFIG"
 
           # Desabilita BTF (evita erro do pahole)
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/# CONFIG_DEBUG_INFO_BTF is not set/g' "$DEFCONFIG"
@@ -149,6 +155,7 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu-
             CROSS_COMPILE=aarch64-linux-gnu-
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            KCFLAGS="-Wno-error"
           )
 
           echo "⚙️ Gerando .config..."
@@ -158,7 +165,7 @@ jobs:
           make "${MAKE_ARGS[@]}" olddefconfig
 
           echo "🛠️ Compilando kernel (usando todos os núcleos)..."
-          make -j"$(nproc)" "${MAKE_ARGS[@]}" KCFLAGS="-Wno-error"
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" Image
           ccache -s || true
 
           # Prioriza a Image "pura" (o DTB já é anexado à parte no mkbootimg);
@@ -209,6 +216,7 @@ jobs:
           sed -i 's/-Werror//g' Makefile
           sed -i 's/-Werror//g' libmincrypt/Makefile || true
           make
+          chmod +x mkbootimg
           cd ..
           if [ -f mkbootimg/mkbootimg ]; then
             echo "✅ mkbootimg compilado com sucesso"
@@ -261,7 +269,8 @@ jobs:
           fi
 
           # Encontrar DTB (ajuste o filtro do grep pro padrão real dos .dtb do seu kernel)
-          DTB=$(find kernel/out/arch/arm64/boot/dts -name "*.dtb" 2>/dev/null | grep -E "exynos|s5e|a14" | head -1 || true)
+          # Se nenhuma DTB for encontrada, continua mesmo assim (sem DTB no boot.img)
+          DTB=$(find kernel/out/arch/arm64/boot/dts -name "*.dtb" 2>/dev/null | head -1 || true)
 
           # Array em vez de string concatenada: evita quebrar se algum caminho tiver espaço
           MKBOOTIMG_ARGS=(--kernel "kernel/$KERNEL_IMAGE" --ramdisk ramdisk.img --output halium-boot.img)
@@ -270,7 +279,7 @@ jobs:
             MKBOOTIMG_ARGS+=(--dtb "$DTB")
             echo "✅ Incluindo DTB: $DTB"
           else
-            echo "⚠️ Nenhuma DTB encontrada. O boot pode não funcionar."
+            echo "⚠️ Nenhuma DTB encontrada. O boot pode não funcionar sem ela."
           fi
 
           # Use o mkbootimg compilado localmente, não o do sistema
