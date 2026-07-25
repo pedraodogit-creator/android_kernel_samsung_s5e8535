@@ -100,13 +100,11 @@ jobs:
           cp "$DEFCONFIG" "$DEFCONFIG.bak"
 
           # Remove duplicates if they already exist, then add Halium options
-          grep -v "^CONFIG_ANDROID_BINDER_IPC=" "$DEFCONFIG" > "$DEFCONFIG.tmp" && mv "$DEFCONFIG.tmp" "$DEFCONFIG"
-          grep -v "^CONFIG_ASHMEM=" "$DEFCONFIG" > "$DEFCONFIG.tmp" && mv "$DEFCONFIG.tmp" "$DEFCONFIG"
-          grep -v "^CONFIG_ION=" "$DEFCONFIG" > "$DEFCONFIG.tmp" && mv "$DEFCONFIG.tmp" "$DEFCONFIG"
-          grep -v "^CONFIG_ANDROID_BINDER_DEVICES=" "$DEFCONFIG" > "$DEFCONFIG.tmp" && mv "$DEFCONFIG.tmp" "$DEFCONFIG"
+          # Using awk to remove lines more safely
+          awk '!/^CONFIG_ANDROID_BINDER_IPC=|^CONFIG_ASHMEM=|^CONFIG_ION=|^CONFIG_ANDROID_BINDER_DEVICES=/' "$DEFCONFIG" > "$DEFCONFIG.tmp" && mv "$DEFCONFIG.tmp" "$DEFCONFIG"
 
           # Adiciona opções do Halium
-          printf '\nCONFIG_ANDROID_BINDER_IPC=y\n' >> "$DEFCONFIG"
+          printf 'CONFIG_ANDROID_BINDER_IPC=y\n' >> "$DEFCONFIG"
           printf 'CONFIG_ASHMEM=y\n' >> "$DEFCONFIG"
           printf 'CONFIG_ION=y\n' >> "$DEFCONFIG"
           printf 'CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"\n' >> "$DEFCONFIG"
@@ -135,12 +133,14 @@ jobs:
           set -euo pipefail
           cd kernel
 
+          # Set PATH to ensure Clang is found
           export PATH="${{ github.workspace }}/toolchain/bin:$PATH"
           export CCACHE_DIR="$HOME/.ccache"
           export CCACHE_MAXSIZE=5G
 
           if ! command -v clang &> /dev/null; then
             echo "❌ Clang não encontrado no PATH!"
+            echo "Current PATH: $PATH"
             exit 1
           fi
           echo "🔧 Usando Clang: $(clang --version | head -n1)"
@@ -166,6 +166,8 @@ jobs:
 
           echo "🛠️ Compilando kernel (usando todos os núcleos)..."
           make -j"$(nproc)" "${MAKE_ARGS[@]}" Image
+          
+          echo "📊 Exibindo estatísticas do ccache..."
           ccache -s || true
 
           # Prioriza a Image "pura" (o DTB já é anexado à parte no mkbootimg);
@@ -174,11 +176,13 @@ jobs:
           for candidate in Image Image.gz Image.gz-dtb Image-dtb; do
             if [ -f "out/arch/arm64/boot/$candidate" ]; then
               IMG="out/arch/arm64/boot/$candidate"
+              echo "✅ Encontrado: $candidate"
               break
             fi
           done
+          
           if [ -z "$IMG" ]; then
-            IMG=$(find out/arch/arm64/boot -maxdepth 1 -name "Image*" -type f | head -n 1)
+            IMG=$(find out/arch/arm64/boot -maxdepth 1 -name "Image*" -type f 2>/dev/null | head -n 1)
           fi
 
           if [ -z "$IMG" ]; then
@@ -215,15 +219,20 @@ jobs:
           cd mkbootimg
           sed -i 's/-Werror//g' Makefile
           sed -i 's/-Werror//g' libmincrypt/Makefile || true
+          
+          echo "🔨 Compilando mkbootimg..."
           make
-          chmod +x mkbootimg
-          cd ..
-          if [ -f mkbootimg/mkbootimg ]; then
-            echo "✅ mkbootimg compilado com sucesso"
+          
+          # Ensure mkbootimg is executable
+          if [ -f mkbootimg ]; then
+            chmod +x mkbootimg
+            echo "✅ mkbootimg executável e compilado com sucesso"
           else
-            echo "❌ Falha ao compilar mkbootimg"
+            echo "❌ Falha ao compilar mkbootimg - arquivo não encontrado"
             exit 1
           fi
+          
+          cd ..
 
       # ============================================================
       # 8. BAIXAR RAMDISK DO HALIUM (via Git)
@@ -233,13 +242,13 @@ jobs:
           set -euo pipefail
           # O "git clone" fica DENTRO da condição do if: assim, se ele falhar,
           # o set -e não mata o script antes de chegarmos no fallback abaixo
-          # (era esse o bug do workflow original).
-          if git clone --depth 1 "${{ env.HALIUM_RAMDISK_REPO }}" halium-ramdisk && [ -f halium-ramdisk/ramdisk.img ]; then
+          if git clone --depth 1 "${{ env.HALIUM_RAMDISK_REPO }}" halium-ramdisk 2>/dev/null && [ -f halium-ramdisk/ramdisk.img ]; then
             cp halium-ramdisk/ramdisk.img .
-            echo "✅ Ramdisk baixado com sucesso"
+            echo "✅ Ramdisk baixado com sucesso do repositório"
           elif [ "${{ inputs.allow_placeholder_ramdisk }}" = "true" ]; then
-            echo "⚠️ Ramdisk real não encontrado. Criando um vazio só para testar a compilação (build NÃO instalável)."
-            touch ramdisk.img
+            echo "⚠️ Ramdisk real não encontrado. Criando um vazio (placeholder) para testar a compilação (build NÃO instalável)."
+            dd if=/dev/zero of=ramdisk.img bs=1K count=1
+            echo "✅ Ramdisk placeholder criado"
           else
             echo "❌ Não foi possível obter um ramdisk Halium real de: ${{ env.HALIUM_RAMDISK_REPO }}"
             echo "   Esse endereço é só um placeholder do workflow original – troque HALIUM_RAMDISK_REPO"
@@ -263,27 +272,39 @@ jobs:
             exit 1
           fi
 
-          if [ ! -f "kernel/$KERNEL_IMAGE" ]; then
-            echo "❌ Kernel Image não encontrado em: kernel/$KERNEL_IMAGE"
+          # Safe path construction
+          KERNEL_IMAGE_PATH="kernel/${KERNEL_IMAGE}"
+          
+          if [ ! -f "$KERNEL_IMAGE_PATH" ]; then
+            echo "❌ Kernel Image não encontrado em: $KERNEL_IMAGE_PATH"
+            ls -la kernel/out/arch/arm64/boot/ || true
             exit 1
           fi
+          
+          echo "✅ Kernel Image encontrado: $KERNEL_IMAGE_PATH"
 
-          # Encontrar DTB (ajuste o filtro do grep pro padrão real dos .dtb do seu kernel)
-          # Se nenhuma DTB for encontrada, continua mesmo assim (sem DTB no boot.img)
+          # Encontrar DTB (pega o primeiro disponível)
           DTB=$(find kernel/out/arch/arm64/boot/dts -name "*.dtb" 2>/dev/null | head -1 || true)
 
-          # Array em vez de string concatenada: evita quebrar se algum caminho tiver espaço
-          MKBOOTIMG_ARGS=(--kernel "kernel/$KERNEL_IMAGE" --ramdisk ramdisk.img --output halium-boot.img)
+          # Array para argumentos do mkbootimg
+          MKBOOTIMG_ARGS=(--kernel "$KERNEL_IMAGE_PATH" --ramdisk ramdisk.img --output halium-boot.img)
 
           if [ -n "$DTB" ] && [ -f "$DTB" ]; then
             MKBOOTIMG_ARGS+=(--dtb "$DTB")
-            echo "✅ Incluindo DTB: $DTB"
+            echo "✅ DTB encontrada: $DTB"
           else
             echo "⚠️ Nenhuma DTB encontrada. O boot pode não funcionar sem ela."
           fi
 
-          # Use o mkbootimg compilado localmente, não o do sistema
-          echo "🔧 Executando: ./mkbootimg/mkbootimg ${MKBOOTIMG_ARGS[*]}"
+          # Verifica se mkbootimg executável existe
+          if [ ! -x ./mkbootimg/mkbootimg ]; then
+            echo "❌ mkbootimg não é executável ou não existe!"
+            ls -la ./mkbootimg/ || true
+            exit 1
+          fi
+
+          # Use o mkbootimg compilado localmente
+          echo "🔧 Executando mkbootimg..."
           ./mkbootimg/mkbootimg "${MKBOOTIMG_ARGS[@]}"
 
           if [ -f halium-boot.img ]; then
