@@ -13,9 +13,13 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y git build-essential libelf-dev flex bison openssl libssl-dev
-          sudo apt install -y gcc-aarch64-linux-gnu clang lld
-          sudo apt install -y mkbootimg   # <-- Instala o mkbootimg via apt
+          sudo apt install -y git build-essential libelf-dev flex bison openssl libssl-dev \
+            gcc-aarch64-linux-gnu clang lld python3 python3-pip wget unzip
+          # instalar mkbootimg e gki via pip no --user para não usar sudo pip
+          python3 -m pip install --upgrade pip
+          python3 -m pip install --user mkbootimg gki || true
+          # garantir ~/.local/bin no PATH do restante do workflow
+          echo "PATH=$HOME/.local/bin:$PATH" >> $GITHUB_ENV
 
       - name: Configure kernel (a14x_defconfig + Halium)
         run: |
@@ -46,35 +50,97 @@ jobs:
           name: kernel-image
           path: arch/arm64/boot/Image
 
-      - name: Download Halium ramdisk (multiple sources)
+      - name: Find DTB file
+        id: dtb
+        run: |
+          DTB_FILE=$(find arch/arm64/boot/dts -name "*.dtb" | grep -E "exynos|s5e|a14" | head -1 || true)
+          if [ -n "$DTB_FILE" ]; then
+            echo "✅ Found DTB: $DTB_FILE"
+            echo "dtb_path=$DTB_FILE" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ No DTB found. Device may not boot."
+            echo "dtb_path=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download Halium ramdisk (from Git)
         id: ramdisk
         run: |
-          sources=(
-            "https://raw.githubusercontent.com/Halium/ramdisk/v9/ramdisk.img"
-            "https://gitlab.com/halium/ramdisk/-/raw/v9/ramdisk.img?inline=false"
-            "https://dl.google.com/android/repository/ramdisk.img"
-          )
-          for url in "${sources[@]}"; do
-            echo "Trying to download from: $url"
-            if wget --timeout=10 --tries=3 "$url" -O ramdisk.img; then
-              echo "✅ Ramdisk downloaded from: $url"
-              echo "ramdisk_ok=true" >> $GITHUB_OUTPUT
-              break
-            fi
-          done
-          if [ ! -f ramdisk.img ]; then
-            echo "⚠️ No ramdisk could be downloaded. Creating an empty one (boot.img will be non-functional)."
+          git clone --depth 1 https://gitlab.com/halium/ramdisk.git halium-ramdisk || true
+          if [ -f halium-ramdisk/ramdisk.img ]; then
+            cp halium-ramdisk/ramdisk.img .
+            echo "✅ Ramdisk downloaded successfully!"
+            echo "ramdisk_ok=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ Ramdisk not found. Creating empty ramdisk (will not boot)."
             echo "ramdisk_ok=false" >> $GITHUB_OUTPUT
             echo "EMPTY RAMDISK (will not boot)" > ramdisk.img
           fi
 
-      - name: Generate halium-boot.img using system mkbootimg
+      - name: Ensure mkbootimg is usable (install/check once)
         run: |
-          if [ -f arch/arm64/boot/Image ]; then
-            mkbootimg --kernel arch/arm64/boot/Image --ramdisk ramdisk.img -o halium-boot.img
-            echo "✅ halium-boot.img generated successfully!"
+          # show PATH and which mkbootimg resolves to
+          echo "PATH=$PATH"
+          echo "which mkbootimg: $(command -v mkbootimg || echo 'not found')"
+
+          # If mkbootimg exists and works, keep it. Otherwise try to install usable mkbootimg.
+          if command -v mkbootimg >/dev/null 2>&1 && mkbootimg --help >/dev/null 2>&1 ; then
+            echo "mkbootimg funcional: $(command -v mkbootimg)"
           else
-            echo "❌ Kernel Image not found. Cannot generate boot.img."
+            echo "Tentando instalar mkbootimg funcional via pip (~/.local/bin)..."
+            python3 -m pip install --upgrade pip
+            python3 -m pip install --user mkbootimg gki || true
+            export PATH="$HOME/.local/bin:$PATH"
+            echo "PATH atualizado temporariamente: $PATH"
+
+            # se ainda assim não existir ou não estiver funcional, instalar fallback do Halium/AOSP
+            if ! command -v mkbootimg >/dev/null 2>&1 || ! mkbootimg --help >/dev/null 2>&1 ; then
+              echo "Tentando fallback: instalar mkbootimg do repositório Halium/AOSP..."
+              git clone --depth 1 https://github.com/Halium/mkbootimg.git /tmp/mkbootimg || true
+              if [ -f /tmp/mkbootimg/mkbootimg ]; then
+                sudo cp /tmp/mkbootimg/mkbootimg /usr/local/bin/mkbootimg
+                sudo chmod +x /usr/local/bin/mkbootimg
+                echo "Fallback: /usr/local/bin/mkbootimg instalado."
+              else
+                echo "Falha no fallback: não encontrou script mkbootimg direto no repo Halium."
+              fi
+            fi
+          fi
+
+          echo "Final check: which mkbootimg -> $(command -v mkbootimg || echo 'nenhum')"
+          mkbootimg --help 2>&1 | sed -n '1,120p' || true
+
+      - name: Generate halium-boot.img (AOSP mkbootimg)
+        run: |
+          set -euo pipefail
+          KERNEL="arch/arm64/boot/Image"
+          RAMDISK="ramdisk.img"
+          DTB="${{ steps.dtb.outputs.dtb_path }}"
+          OUTPUT="halium-boot.img"
+
+          if [ ! -f "$KERNEL" ]; then
+            echo "❌ Kernel Image not found!"
+            exit 1
+          fi
+
+          if ! command -v mkbootimg >/dev/null 2>&1 ; then
+            echo "❌ mkbootimg não está disponível no PATH. Verifique etapa de instalação."
+            exit 1
+          fi
+
+          CMD=(mkbootimg --kernel "$KERNEL" --ramdisk "$RAMDISK" --output "$OUTPUT")
+          if [ -n "$DTB" ] && [ -f "$DTB" ]; then
+            CMD+=(--dtb "$DTB")
+            echo "✅ Incluindo DTB: $DTB"
+          fi
+
+          echo "Executando: ${CMD[*]}"
+          "${CMD[@]}"
+
+          if [ -f "$OUTPUT" ]; then
+            echo "✅ halium-boot.img gerado com sucesso!"
+            ls -lh "$OUTPUT"
+          else
+            echo "❌ Falha ao gerar halium-boot.img"
             exit 1
           fi
 
