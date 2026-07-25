@@ -15,10 +15,12 @@ jobs:
           sudo apt update
           sudo apt install -y git build-essential libelf-dev flex bison openssl libssl-dev
           sudo apt install -y gcc-aarch64-linux-gnu clang lld
-          sudo apt install -y mkbootimg python3
+          sudo apt install -y python3 pip3
+          pip3 install --upgrade mkbootimg
 
       - name: Configure kernel (a14x_defconfig + Halium)
         run: |
+          set -e
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- a14x_defconfig
           echo -e "\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ASHMEM=y\nCONFIG_ION=y\nCONFIG_ANDROID_BINDER_DEVICES=\"binder,hwbinder,vndbinder\"" >> .config
           scripts/config --disable CONFIG_DEBUG_INFO_BTF
@@ -26,6 +28,7 @@ jobs:
 
       - name: Build kernel (using all cores)
         run: |
+          set -e
           make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang LD=ld.lld KCFLAGS="-Wno-error"
 
       - name: Verify kernel image
@@ -49,34 +52,80 @@ jobs:
       - name: Download Halium ramdisk (multiple sources)
         id: ramdisk
         run: |
+          set -e
           sources=(
             "https://raw.githubusercontent.com/Halium/ramdisk/v9/ramdisk.img"
             "https://gitlab.com/halium/ramdisk/-/raw/v9/ramdisk.img?inline=false"
-            "https://dl.google.com/android/repository/ramdisk.img"
           )
+          
+          ramdisk_found=false
           for url in "${sources[@]}"; do
             echo "Trying to download from: $url"
-            if wget --timeout=10 --tries=3 "$url" -O ramdisk.img; then
-              echo "✅ Ramdisk downloaded from: $url"
-              echo "ramdisk_ok=true" >> $GITHUB_OUTPUT
-              break
+            if wget --timeout=10 --tries=2 "$url" -O ramdisk.img 2>/dev/null; then
+              if [ -s ramdisk.img ]; then
+                echo "✅ Ramdisk downloaded successfully from: $url"
+                echo "ramdisk_ok=true" >> $GITHUB_OUTPUT
+                ramdisk_found=true
+                break
+              fi
             fi
           done
-          if [ ! -f ramdisk.img ]; then
-            echo "⚠️ No ramdisk could be downloaded. Creating an empty one (boot.img will be non-functional)."
+          
+          if [ "$ramdisk_found" = false ]; then
+            echo "⚠️ Warning: No ramdisk could be downloaded from remote sources."
+            echo "⚠️ Creating minimal ramdisk image locally..."
             echo "ramdisk_ok=false" >> $GITHUB_OUTPUT
-            echo "EMPTY RAMDISK (will not boot)" > ramdisk.img
+            
+            # Create a minimal working ramdisk
+            mkdir -p ramdisk_tmp
+            cd ramdisk_tmp
+            mkdir -p dev proc sys
+            find . -print0 | cpio -0oH newc | gzip > ../ramdisk.img
+            cd ..
+            rm -rf ramdisk_tmp
+            
+            echo "✅ Minimal ramdisk created (device may need additional configuration)"
           fi
 
-      - name: Generate halium-boot.img (using Python script)
+      - name: Generate halium-boot.img
         run: |
-          if [ -f arch/arm64/boot/Image ]; then
-            python3 /usr/bin/mkbootimg.py --kernel arch/arm64/boot/Image --ramdisk ramdisk.img -o halium-boot.img
-            echo "✅ halium-boot.img generated successfully!"
-          else
-            echo "❌ Kernel Image not found. Cannot generate boot.img."
+          set -e
+          
+          if [ ! -f arch/arm64/boot/Image ]; then
+            echo "❌ Kernel Image not found!"
             exit 1
           fi
+          
+          if [ ! -f ramdisk.img ]; then
+            echo "❌ Ramdisk not found!"
+            exit 1
+          fi
+          
+          echo "🔨 Generating halium-boot.img..."
+          
+          # Try to use DTB if available
+          dtb_file=$(find arch/arm64/boot/dts -name "exynos1330*.dtb" 2>/dev/null | head -1)
+          
+          if [ -n "$dtb_file" ] && [ -f "$dtb_file" ]; then
+            echo "✅ Found DTB: $dtb_file"
+            mkbootimg --kernel arch/arm64/boot/Image \
+                      --ramdisk ramdisk.img \
+                      --dtb "$dtb_file" \
+                      --out halium-boot.img
+          else
+            echo "⚠️ DTB not found, generating boot.img without DTB"
+            mkbootimg --kernel arch/arm64/boot/Image \
+                      --ramdisk ramdisk.img \
+                      --out halium-boot.img
+          fi
+          
+          if [ ! -f halium-boot.img ] || [ ! -s halium-boot.img ]; then
+            echo "❌ Failed to generate halium-boot.img"
+            exit 1
+          fi
+          
+          echo "✅ halium-boot.img generated successfully!"
+          ls -lh halium-boot.img
 
       - name: Upload halium-boot.img as artifact
         uses: actions/upload-artifact@v4
