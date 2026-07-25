@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       allow_placeholder_ramdisk:
-        description: "Build sÃ³ do kernel, sem ramdisk Halium real (o boot.img gerado NÃƒO vai funcionar num aparelho)"
+        description: "Build só do kernel, sem ramdisk Halium real (o boot.img gerado NÃO vai funcionar num aparelho)"
         type: boolean
         default: false
 
@@ -13,10 +13,10 @@ env:
   KERNEL_BRANCH: "lineage-23.2"
   DEVICE_CODENAME: "a14x"
   CLANG_VERSION: "clang-r522817"
-  # ATENÃ‡ÃƒO: este Ã© o repo de exemplo do workflow original. O Halium nÃ£o distribui
-  # um ramdisk genÃ©rico pronto neste endereÃ§o â€” troque pelo ramdisk real do seu
-  # dispositivo (gerado pelo build completo Halium/Android, ou extraÃ­do do
-  # boot.img de fÃ¡brica). Veja o aviso na etapa "Download Halium ramdisk".
+  # ATENÇÃO: este é o repo de exemplo do workflow original. O Halium não distribui
+  # um ramdisk genérico pronto neste endereço – troque pelo ramdisk real do seu
+  # dispositivo (gerado pelo build completo Halium/Android, ou extraído do
+  # boot.img de fábrica). Veja o aviso na etapa "Download Halium ramdisk".
   HALIUM_RAMDISK_REPO: "https://gitlab.com/halium/ramdisk.git"
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
 
     steps:
       # ============================================================
-      # 1. INSTALAÃ‡ÃƒO DE DEPENDÃŠNCIAS
+      # 1. INSTALAÇÃO DE DEPENDÊNCIAS
       # ============================================================
       - name: Install build dependencies
         run: |
@@ -53,21 +53,21 @@ jobs:
           set -euo pipefail
           mkdir -p "${{ github.workspace }}/toolchain"
           cd "${{ github.workspace }}/toolchain"
-          echo "ðŸ“¥ Baixando Clang (${{ env.CLANG_VERSION }})..."
+          echo "📥 Baixando Clang (${{ env.CLANG_VERSION }})..."
           wget -q --show-progress "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${{ env.CLANG_VERSION }}.tar.gz" -O clang.tar.gz
           if [ ! -s clang.tar.gz ]; then
-            echo "âŒ Falha no download do Clang!"
+            echo "❌ Falha no download do Clang!"
             exit 1
           fi
-          echo "ðŸ“¦ Extraindo Clang..."
+          echo "📦 Extraindo Clang..."
           tar -xf clang.tar.gz
           if [ ! -d "bin" ]; then
-            echo "âŒ DiretÃ³rio 'bin' nÃ£o encontrado apÃ³s extraÃ§Ã£o!"
+            echo "❌ Diretório 'bin' não encontrado após extração!"
             exit 1
           fi
           chmod -R +x bin/
           echo "${{ github.workspace }}/toolchain/bin" >> "$GITHUB_PATH"
-          echo "âœ… Clang configurado com sucesso!"
+          echo "✅ Clang configurado com sucesso!"
 
       # ============================================================
       # 3. CLONE DO KERNEL
@@ -75,20 +75,20 @@ jobs:
       - name: Clone kernel source
         run: |
           set -euo pipefail
-          echo "ðŸ“¥ Clonando kernel (branch: ${{ env.KERNEL_BRANCH }})..."
+          echo "📥 Clonando kernel (branch: ${{ env.KERNEL_BRANCH }})..."
           git clone --depth 1 -b "${{ env.KERNEL_BRANCH }}" "${{ env.KERNEL_REPO }}" kernel
           cd kernel
           DEFCONFIG="arch/arm64/configs/${{ env.DEVICE_CODENAME }}_defconfig"
           if [ ! -f "$DEFCONFIG" ]; then
-            echo "âŒ Defconfig nÃ£o encontrado em: $DEFCONFIG"
-            echo "ðŸ“‚ ConteÃºdo de arch/arm64/configs/:"
+            echo "❌ Defconfig não encontrado em: $DEFCONFIG"
+            echo "📂 Conteúdo de arch/arm64/configs/:"
             ls -la arch/arm64/configs/ || true
             exit 1
           fi
-          echo "âœ… Defconfig encontrado: $DEFCONFIG"
+          echo "✅ Defconfig encontrado: $DEFCONFIG"
 
       # ============================================================
-      # 4. CONFIGURAÃ‡ÃƒO DO KERNEL (Halium + CorreÃ§Ãµes + olddefconfig)
+      # 4. CONFIGURAÇÃO DO KERNEL (Halium + Correções + olddefconfig)
       # ============================================================
       - name: Configure kernel
         run: |
@@ -99,7 +99,7 @@ jobs:
           # Backup do original
           cp "$DEFCONFIG" "$DEFCONFIG.bak"
 
-          # Adiciona opÃ§Ãµes do Halium
+          # Adiciona opções do Halium
           echo -e "\nCONFIG_ANDROID_BINDER_IPC=y" >> "$DEFCONFIG"
           echo "CONFIG_ASHMEM=y" >> "$DEFCONFIG"
           echo "CONFIG_ION=y" >> "$DEFCONFIG"
@@ -111,10 +111,10 @@ jobs:
           # Transforma section mismatches em avisos
           echo "CONFIG_SECTION_MISMATCH_WARN_ONLY=y" >> "$DEFCONFIG"
 
-          echo "âœ… ConfiguraÃ§Ã£o concluÃ­da (backup em $DEFCONFIG.bak)"
+          echo "✅ Configuração concluída (backup em $DEFCONFIG.bak)"
 
       # ============================================================
-      # 5. COMPILAÃ‡ÃƒO DO KERNEL (toolchain completo + ccache + olddefconfig)
+      # 5. COMPILAÇÃO DO KERNEL (toolchain completo + ccache + olddefconfig)
       # ============================================================
       - name: Cache ccache
         uses: actions/cache@v4
@@ -134,10 +134,10 @@ jobs:
           export CCACHE_MAXSIZE=5G
 
           if ! command -v clang &> /dev/null; then
-            echo "âŒ Clang nÃ£o encontrado no PATH!"
+            echo "❌ Clang não encontrado no PATH!"
             exit 1
           fi
-          echo "ðŸ”§ Usando Clang: $(clang --version | head -n1)"
+          echo "🔧 Usando Clang: $(clang --version | head -n1)"
 
           # Array em vez de string: evita depender de word-splitting sem aspas
           MAKE_ARGS=(
@@ -151,18 +151,18 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           )
 
-          echo "âš™ï¸ Gerando .config..."
+          echo "⚙️ Gerando .config..."
           make "${MAKE_ARGS[@]}" "${{ env.DEVICE_CODENAME }}_defconfig"
 
-          echo "ðŸ”„ Resolvendo opÃ§Ãµes de configuraÃ§Ã£o pendentes (make olddefconfig)..."
+          echo "📄 Resolvendo opções de configuração pendentes (make olddefconfig)..."
           make "${MAKE_ARGS[@]}" olddefconfig
 
-          echo "ðŸ› ï¸ Compilando kernel (usando todos os nÃºcleos)..."
+          echo "🛠️ Compilando kernel (usando todos os núcleos)..."
           make -j"$(nproc)" "${MAKE_ARGS[@]}" KCFLAGS="-Wno-error"
           ccache -s || true
 
-          # Prioriza a Image "pura" (o DTB jÃ¡ Ã© anexado Ã  parte no mkbootimg);
-          # sÃ³ cai pro find genÃ©rico se nenhuma das opÃ§Ãµes conhecidas existir.
+          # Prioriza a Image "pura" (o DTB já é anexado à parte no mkbootimg);
+          # só cai pro find genérico se nenhuma das opções conhecidas existir.
           IMG=""
           for candidate in Image Image.gz Image.gz-dtb Image-dtb; do
             if [ -f "out/arch/arm64/boot/$candidate" ]; then
@@ -175,13 +175,13 @@ jobs:
           fi
 
           if [ -z "$IMG" ]; then
-            echo "âŒ Nenhuma imagem gerada em out/arch/arm64/boot/"
-            echo "ðŸ“‚ ConteÃºdo de out/arch/arm64/boot/:"
+            echo "❌ Nenhuma imagem gerada em out/arch/arm64/boot/"
+            echo "📂 Conteúdo de out/arch/arm64/boot/:"
             ls -la out/arch/arm64/boot/ || true
             exit 1
           fi
 
-          echo "âœ… Imagem encontrada em: $IMG"
+          echo "✅ Imagem encontrada em: $IMG"
           echo "IMAGE_PATH=${IMG}" >> "$GITHUB_ENV"
 
       # ============================================================
@@ -195,7 +195,7 @@ jobs:
           retention-days: 7
 
       # ============================================================
-      # 7. CLONE DO MKBOOTIMG (repositÃ³rio pÃºblico â€” sem necessidade de token)
+      # 7. CLONE DO MKBOOTIMG (repositório público – sem necessidade de token)
       # ============================================================
       - name: Clone mkbootimg
         run: |
@@ -211,9 +211,9 @@ jobs:
           make
           cd ..
           if [ -f mkbootimg/mkbootimg ]; then
-            echo "âœ… mkbootimg compilado com sucesso"
+            echo "✅ mkbootimg compilado com sucesso"
           else
-            echo "âŒ Falha ao compilar mkbootimg"
+            echo "❌ Falha ao compilar mkbootimg"
             exit 1
           fi
 
@@ -223,21 +223,21 @@ jobs:
       - name: Download Halium ramdisk
         run: |
           set -euo pipefail
-          # O "git clone" fica DENTRO da condiÃ§Ã£o do if: assim, se ele falhar,
-          # o set -e nÃ£o mata o script antes de chegarmos no fallback abaixo
+          # O "git clone" fica DENTRO da condição do if: assim, se ele falhar,
+          # o set -e não mata o script antes de chegarmos no fallback abaixo
           # (era esse o bug do workflow original).
           if git clone --depth 1 "${{ env.HALIUM_RAMDISK_REPO }}" halium-ramdisk && [ -f halium-ramdisk/ramdisk.img ]; then
             cp halium-ramdisk/ramdisk.img .
-            echo "âœ… Ramdisk baixado com sucesso"
+            echo "✅ Ramdisk baixado com sucesso"
           elif [ "${{ inputs.allow_placeholder_ramdisk }}" = "true" ]; then
-            echo "âš ï¸ Ramdisk real nÃ£o encontrado. Criando um vazio sÃ³ para testar a compilaÃ§Ã£o (build NÃƒO instalÃ¡vel)."
+            echo "⚠️ Ramdisk real não encontrado. Criando um vazio só para testar a compilação (build NÃO instalável)."
             touch ramdisk.img
           else
-            echo "âŒ NÃ£o foi possÃ­vel obter um ramdisk Halium real de: ${{ env.HALIUM_RAMDISK_REPO }}"
-            echo "   Esse endereÃ§o Ã© sÃ³ um placeholder do workflow original â€” troque HALIUM_RAMDISK_REPO"
-            echo "   pelo ramdisk real do seu dispositivo (build completo Halium/Android, ou extraÃ­do do"
-            echo "   boot.img de fÃ¡brica com o prÃ³prio mkbootimg/unpackbootimg)."
-            echo "   Para compilar mesmo assim sÃ³ para testar o kernel, rode este workflow com"
+            echo "❌ Não foi possível obter um ramdisk Halium real de: ${{ env.HALIUM_RAMDISK_REPO }}"
+            echo "   Esse endereço é só um placeholder do workflow original – troque HALIUM_RAMDISK_REPO"
+            echo "   pelo ramdisk real do seu dispositivo (build completo Halium/Android, ou extraído do"
+            echo "   boot.img de fábrica com o próprio mkbootimg/unpackbootimg)."
+            echo "   Para compilar mesmo assim só para testar o kernel, rode este workflow com"
             echo "   'allow_placeholder_ramdisk: true'."
             exit 1
           fi
@@ -251,36 +251,37 @@ jobs:
           KERNEL_IMAGE="${{ env.IMAGE_PATH }}"
 
           if [ -z "$KERNEL_IMAGE" ]; then
-            echo "âŒ IMAGE_PATH nÃ£o foi definida!"
+            echo "❌ IMAGE_PATH não foi definida!"
             exit 1
           fi
 
           if [ ! -f "kernel/$KERNEL_IMAGE" ]; then
-            echo "âŒ Kernel Image nÃ£o encontrado em: kernel/$KERNEL_IMAGE"
+            echo "❌ Kernel Image não encontrado em: kernel/$KERNEL_IMAGE"
             exit 1
           fi
 
-          # Encontrar DTB (ajuste o filtro do grep pro padrÃ£o real dos .dtb do seu kernel)
+          # Encontrar DTB (ajuste o filtro do grep pro padrão real dos .dtb do seu kernel)
           DTB=$(find kernel/out/arch/arm64/boot/dts -name "*.dtb" 2>/dev/null | grep -E "exynos|s5e|a14" | head -1 || true)
 
-          # Array em vez de string concatenada: evita quebrar se algum caminho tiver espaÃ§o
+          # Array em vez de string concatenada: evita quebrar se algum caminho tiver espaço
           MKBOOTIMG_ARGS=(--kernel "kernel/$KERNEL_IMAGE" --ramdisk ramdisk.img --output halium-boot.img)
 
           if [ -n "$DTB" ] && [ -f "$DTB" ]; then
             MKBOOTIMG_ARGS+=(--dtb "$DTB")
-            echo "âœ… Incluindo DTB: $DTB"
+            echo "✅ Incluindo DTB: $DTB"
           else
-            echo "âš ï¸ Nenhuma DTB encontrada. O boot pode nÃ£o funcionar."
+            echo "⚠️ Nenhuma DTB encontrada. O boot pode não funcionar."
           fi
 
-          echo "ðŸ“¦ Executando: ./mkbootimg/mkbootimg ${MKBOOTIMG_ARGS[*]}"
+          # Use o mkbootimg compilado localmente, não o do sistema
+          echo "🔧 Executando: ./mkbootimg/mkbootimg ${MKBOOTIMG_ARGS[*]}"
           ./mkbootimg/mkbootimg "${MKBOOTIMG_ARGS[@]}"
 
           if [ -f halium-boot.img ]; then
-            echo "âœ… halium-boot.img gerado com sucesso!"
+            echo "✅ halium-boot.img gerado com sucesso!"
             ls -lh halium-boot.img
           else
-            echo "âŒ Falha ao gerar halium-boot.img"
+            echo "❌ Falha ao gerar halium-boot.img"
             exit 1
           fi
 
