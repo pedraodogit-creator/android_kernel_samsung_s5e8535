@@ -1,7 +1,7 @@
 name: Build Kernel for A14 5G (Exynos 1330)
 
 on:
-  workflow_dispatch:  # Permite iniciar manualmente
+  workflow_dispatch:
 
 jobs:
   build:
@@ -15,6 +15,7 @@ jobs:
           sudo apt update
           sudo apt install -y git build-essential libelf-dev flex bison openssl libssl-dev
           sudo apt install -y gcc-aarch64-linux-gnu clang lld
+          sudo apt install -y mkbootimg   # <-- Instala o mkbootimg via apt
 
       - name: Configure kernel (a14x_defconfig + Halium)
         run: |
@@ -67,24 +68,10 @@ jobs:
             echo "EMPTY RAMDISK (will not boot)" > ramdisk.img
           fi
 
-      - name: Build mkbootimg tool from source (with safe CFLAGS)
-        run: |
-          git clone https://github.com/osm0sis/mkbootimg
-          cd mkbootimg
-          # Compila com flags que desabilitam avisos problemáticos como erros
-          make CFLAGS="-Wno-error=stringop-overflow -Wno-error=format -Wno-error=implicit-function-declaration"
-          cd ..
-          if [ -f mkbootimg/mkbootimg ]; then
-            echo "✅ mkbootimg compiled successfully"
-          else
-            echo "❌ Failed to compile mkbootimg"
-            exit 1
-          fi
-
-      - name: Generate halium-boot.img
+      - name: Generate halium-boot.img using system mkbootimg
         run: |
           if [ -f arch/arm64/boot/Image ]; then
-            ./mkbootimg/mkbootimg --kernel arch/arm64/boot/Image --ramdisk ramdisk.img -o halium-boot.img
+            mkbootimg --kernel arch/arm64/boot/Image --ramdisk ramdisk.img -o halium-boot.img
             echo "✅ halium-boot.img generated successfully!"
           else
             echo "❌ Kernel Image not found. Cannot generate boot.img."
