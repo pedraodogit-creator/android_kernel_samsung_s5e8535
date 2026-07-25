@@ -15,7 +15,7 @@ jobs:
           sudo apt update
           sudo apt install -y git build-essential libelf-dev flex bison openssl libssl-dev
           sudo apt install -y gcc-aarch64-linux-gnu clang lld
-          sudo apt install -y mkbootimg   # <-- Instala o mkbootimg via apt
+          sudo apt install -y mkbootimg python3
 
       - name: Configure kernel (a14x_defconfig + Halium)
         run: |
@@ -68,10 +68,10 @@ jobs:
             echo "EMPTY RAMDISK (will not boot)" > ramdisk.img
           fi
 
-      - name: Generate halium-boot.img using system mkbootimg
+      - name: Generate halium-boot.img (using Python script)
         run: |
           if [ -f arch/arm64/boot/Image ]; then
-            mkbootimg --kernel arch/arm64/boot/Image --ramdisk ramdisk.img -o halium-boot.img
+            python3 /usr/bin/mkbootimg.py --kernel arch/arm64/boot/Image --ramdisk ramdisk.img -o halium-boot.img
             echo "✅ halium-boot.img generated successfully!"
           else
             echo "❌ Kernel Image not found. Cannot generate boot.img."
