@@ -99,15 +99,16 @@ jobs:
           # Backup do original
           cp "$DEFCONFIG" "$DEFCONFIG.bak"
 
-          # Remove duplicates if they already exist, then add Halium options
-          # Using awk to remove lines more safely
-          awk '!/^CONFIG_ANDROID_BINDER_IPC=|^CONFIG_ASHMEM=|^CONFIG_ION=|^CONFIG_ANDROID_BINDER_DEVICES=/' "$DEFCONFIG" > "$DEFCONFIG.tmp" && mv "$DEFCONFIG.tmp" "$DEFCONFIG"
+          # FIX #1: Use single awk command with proper AND logic to remove duplicates
+          awk '!/^CONFIG_ANDROID_BINDER_IPC=/ && !/^CONFIG_ASHMEM=/ && !/^CONFIG_ION=/ && !/^CONFIG_ANDROID_BINDER_DEVICES=/' "$DEFCONFIG" > "$DEFCONFIG.tmp" && mv "$DEFCONFIG.tmp" "$DEFCONFIG"
 
-          # Adiciona opções do Halium
-          printf 'CONFIG_ANDROID_BINDER_IPC=y\n' >> "$DEFCONFIG"
-          printf 'CONFIG_ASHMEM=y\n' >> "$DEFCONFIG"
-          printf 'CONFIG_ION=y\n' >> "$DEFCONFIG"
-          printf 'CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"\n' >> "$DEFCONFIG"
+          # FIX #2: Write all Halium configs at once to a temp file, then append once
+          cat >> "$DEFCONFIG" << 'HALIUM_CONFIG'
+CONFIG_ANDROID_BINDER_IPC=y
+CONFIG_ASHMEM=y
+CONFIG_ION=y
+CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"
+HALIUM_CONFIG
 
           # Desabilita BTF (evita erro do pahole)
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/# CONFIG_DEBUG_INFO_BTF is not set/g' "$DEFCONFIG"
@@ -133,7 +134,6 @@ jobs:
           set -euo pipefail
           cd kernel
 
-          # Set PATH to ensure Clang is found
           export PATH="${{ github.workspace }}/toolchain/bin:$PATH"
           export CCACHE_DIR="$HOME/.ccache"
           export CCACHE_MAXSIZE=5G
@@ -247,8 +247,9 @@ jobs:
             echo "✅ Ramdisk baixado com sucesso do repositório"
           elif [ "${{ inputs.allow_placeholder_ramdisk }}" = "true" ]; then
             echo "⚠️ Ramdisk real não encontrado. Criando um vazio (placeholder) para testar a compilação (build NÃO instalável)."
-            dd if=/dev/zero of=ramdisk.img bs=1K count=1
-            echo "✅ Ramdisk placeholder criado"
+            # FIX #3: Create proper empty CPIO ramdisk instead of empty file
+            echo | cpio -o -H newc | gzip > ramdisk.img
+            echo "✅ Ramdisk placeholder (empty CPIO) criado"
           else
             echo "❌ Não foi possível obter um ramdisk Halium real de: ${{ env.HALIUM_RAMDISK_REPO }}"
             echo "   Esse endereço é só um placeholder do workflow original – troque HALIUM_RAMDISK_REPO"
