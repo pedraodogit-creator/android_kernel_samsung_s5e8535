@@ -23,16 +23,26 @@ jobs:
             bc bison build-essential ccache curl device-tree-compiler \
             flex git gnupg gperf libxml2-utils \
             lzop pngcrush schedtool squashfs-tools xsltproc zip zlib1g-dev \
-            libssl-dev python3 python3-pip libelf-dev cpio
+            libssl-dev python3 python3-pip libelf-dev cpio \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
       - name: Setup Clang
         run: |
-          mkdir -p $GITHUB_WORKSPACE/toolchain
-          cd $GITHUB_WORKSPACE/toolchain
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz -O clang.tar.gz
-          tar -xf clang.tar.gz
-          chmod -R +x bin/
-          echo "$GITHUB_WORKSPACE/toolchain/bin" >> $GITHUB_PATH
+          set -euxo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/toolchain"
+          cd "$GITHUB_WORKSPACE/toolchain"
+          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz"
+          wget -q "$CLANG_URL" -O clang.tar.gz
+          # Extrai o conteúdo direto no diretório toolchain (remove nível topo)
+          tar -xf clang.tar.gz --strip-components=1
+          # Torna binários executáveis (agora bin/ existe aqui)
+          chmod -R +x "$GITHUB_WORKSPACE/toolchain/bin" || true
+          # Adiciona ao PATH do runner
+          echo "$GITHUB_WORKSPACE/toolchain/bin" >> "$GITHUB_PATH"
+          # Debug: confirma clang no PATH e versões
+          echo "=== toolchain/bin listing ==="
+          ls -la "$GITHUB_WORKSPACE/toolchain/bin" | sed -n '1,200p'
+          clang --version || true
 
       - name: Clone kernel source
         run: |
@@ -68,11 +78,11 @@ jobs:
 
       - name: Build kernel
         run: |
+          set -euxo pipefail
           cd kernel
-          
           export PATH="$GITHUB_WORKSPACE/toolchain/bin:$PATH"
-          
-          # Configurações LLVM 100% nativas (sem gcc cross-compiler)
+
+          # Configurações LLVM nativas. Mantemos CROSS_COMPILE instalado caso seja necessário
           MAKE_ARGS="O=out ARCH=arm64 \
             CC=clang \
             LLVM=1 \
@@ -82,16 +92,18 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
 
           make $MAKE_ARGS ${DEVICE_CODENAME}_defconfig
-          
+
           make -j$(nproc --all) $MAKE_ARGS
-          
-          IMG=$(find out/arch/arm64/boot -name "Image*" -type f | head -n 1)
-          
+
+          # Procura por Image, Image.gz, Image.lz4 ou variações
+          IMG=$(find out/arch/arm64/boot -type f \( -name "Image" -o -name "Image.gz" -o -name "Image.lz4" -o -name "Image*" \) | head -n 1)
+
           if [ -z "$IMG" ]; then
             echo "❌ Nenhuma imagem gerada!"
+            ls -la out/arch/arm64/boot || true
             exit 1
           fi
-          
+
           echo "IMAGE_PATH=$IMG" >> $GITHUB_ENV
           echo "✅ Imagem encontrada em: $IMG"
 
@@ -103,8 +115,9 @@ jobs:
 
       - name: Package with AnyKernel3
         run: |
+          set -euxo pipefail
           git clone https://github.com/osm0sis/AnyKernel3 AnyKernel3
-          cp kernel/$IMAGE_PATH AnyKernel3/Image
+          cp "kernel/$IMAGE_PATH" AnyKernel3/Image
           
           if [ -d "kernel/modules" ] && [ "$(ls -A kernel/modules)" ]; then
             mkdir -p AnyKernel3/modules/vendor/lib/modules
